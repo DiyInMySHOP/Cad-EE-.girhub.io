@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Electrical CAD – MDB / Solar (Phase 1: 2D)</title>
+<style>
+:root{--bg:#12151a;--p:#1b2028;--b:#2c3440;--t:#d6dde8;--a:#3ea6ff}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--t);font:13px system-ui,sans-serif}
+#app{display:grid;grid-template:38px 1fr 24px/62px 1fr 230px;height:100%}
+#top{grid-column:1/4;background:var(--p);border-bottom:1px solid var(--b);display:flex;gap:4px;align-items:center;padding:0 8px;overflow-x:auto}
+#left{background:var(--p);border-right:1px solid var(--b);display:flex;flex-direction:column;gap:3px;padding:5px;overflow-y:auto}
+#right{background:var(--p);border-left:1px solid var(--b);overflow-y:auto;padding:8px}
+#status{grid-column:1/4;background:var(--p);border-top:1px solid var(--b);padding:3px 10px;color:#8b98aa}
+button,select{background:#252c37;color:var(--t);border:1px solid var(--b);border-radius:4px;padding:5px 8px;cursor:pointer;font:inherit;white-space:nowrap}
+button:hover{border-color:var(--a)}button.on{background:var(--a);color:#06121f;border-color:var(--a)}
+#left button{padding:7px 2px;font-size:11px}
+#cv{width:100%;height:100%;display:block;background:#0e1116;touch-action:none}
+h4{margin:10px 0 6px;font-size:12px;color:var(--a);text-transform:uppercase;letter-spacing:.05em}
+.lib{display:flex;align-items:center;gap:8px;padding:5px;margin:3px 0;border:1px solid var(--b);border-radius:4px;cursor:grab;background:#20262f}
+.lib i{display:inline-block;width:14px;height:14px;border-radius:2px}
+.f{display:flex;justify-content:space-between;align-items:center;margin:4px 0}
+.f input{width:110px;background:#0e1116;color:var(--t);border:1px solid var(--b);border-radius:3px;padding:3px 5px}
+.sep{width:1px;height:22px;background:var(--b);margin:0 4px}
+</style></head><body>
+<div id="app">
+<div id="top">
+ <b style="color:var(--a)">⚡ Electrical CAD</b><span class="sep"></span>
+ <button onclick="newP()">New</button><button onclick="saveP()">Save</button><button onclick="document.getElementById('fi').click()">Load</button>
+ <button onclick="dupP()">Duplicate Project</button><span class="sep"></span>
+ <button onclick="undo()">Undo</button><button onclick="redo()">Redo</button>
+ <button onclick="copy()">Copy</button><button onclick="paste()">Paste</button><button onclick="del()">Delete</button>
+ <button onclick="rot()">Rotate 90°</button><button onclick="mirror()">Mirror</button>
+ <button onclick="group()">Group</button><button onclick="ungroup()">Ungroup</button><span class="sep"></span>
+ <button id="snapB" class="on" onclick="toggleSnap()">Snap</button>
+ <label>Grid <select id="grid" onchange="G=+this.value;draw()"><option>10</option><option selected>50</option><option>100</option><option>200</option></select> mm</label>
+ <button onclick="fit()">Fit</button><span class="sep"></span>
+ <button onclick="sample('mdb')">Sample MDB</button><button onclick="sample('solar')">Sample Solar</button>
+ <button onclick="exportSVG()">Export SVG</button><button onclick="window.print()">Export PDF</button>
+ <input type="file" id="fi" accept=".json" hidden>
+</div>
+<div id="left"></div>
+<svg id="cv"><defs><pattern id="gp" patternUnits="userSpaceOnUse"><path id="gpp" fill="none" stroke="#1f2630"/></pattern></defs>
+ <rect id="gr" width="100%" height="100%" fill="url(#gp)"/><g id="w"></g></svg>
+<div id="right"><h4>Library</h4><div id="lib"></div><h4>Properties</h4><div id="props" style="color:#8b98aa">Select an object</div></div>
+<div id="status">Ready</div>
+</div>
+<script>
+// ===== State =====
+let objs=[],sel=[],U=[],R=[],clip=[],tool='select',G=50,snap=true,v={x:60,y:60,k:.4},tmp=null,pts=[],drag=null,pan=null,nid=1,gid=1;
+const cv=document.getElementById('cv'),W=document.getElementById('w'),st=document.getElementById('status');
+const TOOLS=[['select','Select V'],['line','Line L'],['rect','Rect R'],['circle','Circle C'],['poly','Polyline P'],['dim','Dimension D'],['text','Text T']];
+const LIB=[['MCCB 3P',105,160,'#e0a030'],['MCCB 4P',140,160,'#e0a030'],['ACB',300,400,'#d05050'],['MCB 1P',18,90,'#60b0e0'],['MCB 3P',54,90,'#60b0e0'],
+['DC Breaker',36,90,'#b070e0'],['Busbar R',600,20,'#e05050'],['Busbar S',600,20,'#e0c020'],['Busbar T',600,20,'#4080e0'],['Busbar N',600,20,'#909090'],['PE Bar',600,20,'#40b060'],
+['CT',60,60,'#40b0a0'],['Power Meter',96,96,'#40b0a0'],['SPD',54,90,'#e07090'],['Contactor',45,80,'#a0a0e0'],['Terminal Block',200,30,'#8090a0'],
+['PV Fuse Holder',18,90,'#e08040'],['Solar Inverter',500,350,'#40c080'],['DC Isolator',70,90,'#b070e0'],['Cabinet 800x2000',800,2000,'#5a6a80']];
+// ===== Helpers =====
+const sn=x=>snap?Math.round(x/G)*G:x;
+const w2s=(x,y)=>[x*v.k+v.x,y*v.k+v.y];
+function pt(e){const r=cv.getBoundingClientRect();let x=(e.clientX-r.left-v.x)/v.k,y=(e.clientY-r.top-v.y)/v.k;return[sn(x),sn(y)]}
+function push(){U.push(JSON.stringify(objs));R=[];if(U.length>200)U.shift()}
+function undo(){if(!U.length)return;R.push(JSON.stringify(objs));objs=JSON.parse(U.pop());sel=[];draw()}
+function redo(){if(!R.length)return;U.push(JSON.stringify(objs));objs=JSON.parse(R.pop());sel=[];draw()}
+function add(o){o.id=nid++;objs.push(o);return o}
+function mv(o,dx,dy){if('x'in o)o.x+=dx,o.y+=dy;if('x2'in o)o.x2+=dx,o.y2+=dy;if(o.pts)o.pts=o.pts.map(p=>[p[0]+dx,p[1]+dy])}
+function selSet(){const s=new Set(sel);objs.forEach(o=>{if(o.g&&s.has(o.id))objs.forEach(q=>{if(q.g===o.g)s.add(q.id)})});return s}
+function bbox(o){if(o.t==='circle')return[o.x-o.r,o.y-o.r,o.x+o.r,o.y+o.r];if(o.pts){const a=o.pts.map(p=>p[0]),b=o.pts.map(p=>p[1]);return[Math.min(...a),Math.min(...b),Math.max(...a),Math.max(...b)]}
+ if('x2'in o)return[Math.min(o.x,o.x2),Math.min(o.y,o.y2),Math.max(o.x,o.x2),Math.max(o.y,o.y2)];return[o.x,o.y,o.x+(o.w||0),o.y+(o.h||0)]}
+// ===== Render =====
+const S='stroke="#cfd8e6" stroke-width="1.4" vector-effect="non-scaling-stroke" fill="none"';
+function shape(o,hl){const c=hl?'#3ea6ff':'#cfd8e6',s=`stroke="${c}" stroke-width="${hl?2.2:1.4}" vector-effect="non-scaling-stroke" fill="none"`;
+ if(o.t==='line')return`<line x1="${o.x}" y1="${o.y}" x2="${o.x2}" y2="${o.y2}" ${s}/>`;
+ if(o.t==='rect')return`<rect x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" ${s} ${o.rot?`transform="rotate(${o.rot} ${o.x+o.w/2} ${o.y+o.h/2})"`:''}/>`;
+ if(o.t==='circle')return`<circle cx="${o.x}" cy="${o.y}" r="${o.r}" ${s}/>`;
+ if(o.t==='poly')return`<polyline points="${o.pts.join(' ')}" ${s}/>`;
+ if(o.t==='text')return`<text x="${o.x}" y="${o.y}" fill="${c}" font-size="${o.fs||60}" font-family="sans-serif">${esc(o.s)}</text>`;
+ if(o.t==='comp'){const fs=Math.max(10,Math.min(o.w/5,o.h/3,40));return`<g ${o.rot?`transform="rotate(${o.rot} ${o.x+o.w/2} ${o.y+o.h/2})"`:''}><rect x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" fill="${o.c}33" stroke="${hl?'#3ea6ff':o.c}" stroke-width="${hl?2.5:1.4}" vector-effect="non-scaling-stroke"/><text x="${o.x+o.w/2}" y="${o.y+o.h/2}" fill="#e6edf7" font-size="${fs}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif">${esc(o.name)}</text></g>`}
+ if(o.t==='dim'){const dx=o.x2-o.x,dy=o.y2-o.y,L=Math.hypot(dx,dy),a=Math.atan2(dy,dx)*180/Math.PI,mx=(o.x+o.x2)/2,my=(o.y+o.y2)/2,col=hl?'#3ea6ff':'#f0b040';
+  return`<g stroke="${col}" stroke-width="1.2" vector-effect="non-scaling-stroke"><line x1="${o.x}" y1="${o.y}" x2="${o.x2}" y2="${o.y2}" vector-effect="non-scaling-stroke"/><circle cx="${o.x}" cy="${o.y}" r="${4/v.k}" fill="${col}"/><circle cx="${o.x2}" cy="${o.y2}" r="${4/v.k}" fill="${col}"/></g><text x="${mx}" y="${my-8/v.k}" fill="${col}" font-size="${13/v.k}" text-anchor="middle" font-family="sans-serif" transform="rotate(${a>90||a<-90?a+180:a} ${mx} ${my})">${Math.round(L)} mm</text>`}
+ return''}
+const esc=s=>String(s).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+function draw(){const s=selSet();let h='';
+ objs.forEach(o=>{const hl=s.has(o.id);h+=`<g data-id="${o.id}">${shape(o,hl)}${o.t==='line'||o.t==='poly'||o.t==='dim'?shape(o,0).replace(/stroke="[^"]*"/,'stroke="transparent"').replace(/stroke-width="[^"]*"/,'stroke-width="12"').replace(/fill="[^"]*"/,''):''}</g>`});
+ if(tmp)h+=shape(tmp,0).replace(/#cfd8e6/g,'#3ea6ff');
+ W.setAttribute('transform',`translate(${v.x} ${v.y}) scale(${v.k})`);W.innerHTML=h;
+ const gs=Math.max(G*v.k,4);const p=document.getElementById('gp');p.setAttribute('width',gs);p.setAttribute('height',gs);p.setAttribute('x',v.x);p.setAttribute('y',v.y);
+ document.getElementById('gpp').setAttribute('d',`M${gs} 0H0V${gs}`);props();}
+function props(){const el=document.getElementById('props');const o=objs.find(q=>q.id===sel[0]);if(!o){el.innerHTML='Select an object';return}
+ const keys=[['name','Name'],['s','Text'],['x','X (mm)'],['y','Y (mm)'],['w','Width'],['h','Height'],['r','Radius'],['x2','X2'],['y2','Y2'],['rot','Rotation °']];
+ el.innerHTML=`<div class="f"><span>Type</span><b>${o.t}${o.g?' (grp '+o.g+')':''}</b></div><div class="f"><span>ID</span><b>${o.id}</b></div>`+keys.filter(k=>k[0]in o||(k[0]==='rot'&&(o.t==='comp'||o.t==='rect'))).map(k=>`<div class="f"><span>${k[1]}</span><input value="${o[k[0]]??0}" onchange="setP(${o.id},'${k[0]}',this.value)"></div>`).join('')}
+function setP(id,k,val){const o=objs.find(q=>q.id===id);push();o[k]=['name','s'].includes(k)?val:+val||0;draw()}
+// ===== Tools UI =====
+const L=document.getElementById('left');
+TOOLS.forEach(([t,n])=>{const b=document.createElement('button');b.textContent=n;b.dataset.t=t;b.onclick=()=>setTool(t);L.appendChild(b)});
+function setTool(t){tool=t;tmp=null;pts=[];[...L.children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));cv.style.cursor=t==='select'?'default':'crosshair';st.textContent='Tool: '+t;draw()}
+const LB=document.getElementById('lib');
+LIB.forEach(([n,w,h,c])=>{const d=document.createElement('div');d.className='lib';d.draggable=true;d.innerHTML=`<i style="background:${c}"></i><span>${n}<br><small style="color:#7d8aa0">${w}×${h} mm</small></span>`;
+ d.ondragstart=e=>e.dataTransfer.setData('text',n);d.onclick=()=>place(n,(cv.clientWidth/2-v.x)/v.k,(cv.clientHeight/2-v.y)/v.k);LB.appendChild(d)});
+function place(n,x,y){const l=LIB.find(q=>q[0]===n);if(!l)return;push();const o=add({t:'comp',name:n,x:sn(x-l[1]/2),y:sn(y-l[2]/2),w:l[1],h:l[2],c:l[3],mfr:'',rot:0});sel=[o.id];draw()}
+cv.ondragover=e=>e.preventDefault();
+cv.ondrop=e=>{e.preventDefault();const r=cv.getBoundingClientRect();place(e.dataTransfer.getData('text'),(e.clientX-r.left-v.x)/v.k,(e.clientY-r.top-v.y)/v.k)};
+// ===== Mouse =====
+cv.onmousedown=e=>{const [x,y]=pt(e);
+ if(e.button===1||e.button===2||e.altKey){pan={sx:e.clientX,sy:e.clientY,ox:v.x,oy:v.y};return}
+ if(tool==='select'){const id=e.target.closest('[data-id]')?.dataset.id;
+  if(id){const o=objs.find(q=>q.id==id);if(e.shiftKey){sel.includes(o.id)?sel=sel.filter(i=>i!==o.id):sel.push(o.id)}else if(!sel.includes(o.id))sel=[o.id];
+   push();drag={x,y};}else{sel=[]}draw();return}
+ if(tool==='line'||tool==='dim'||tool==='rect'||tool==='circle'){tmp={t:tool,x,y,x2:x,y2:y,w:0,h:0,r:0};return}
+ if(tool==='poly'){pts.push([x,y]);tmp={t:'poly',pts:[...pts,[x,y]]};draw();return}
+ if(tool==='text'){const s=prompt('Text:');if(s){push();sel=[add({t:'text',x,y,s,fs:60}).id]}draw()}};
+cv.onmousemove=e=>{const [x,y]=pt(e);st.textContent=`X ${Math.round(x)}  Y ${Math.round(y)} mm   |  Zoom ${Math.round(v.k*100)}%  |  Tool: ${tool}`;
+ if(pan){v.x=pan.ox+e.clientX-pan.sx;v.y=pan.oy+e.clientY-pan.sy;draw();return}
+ if(drag){const dx=x-drag.x,dy=y-drag.y;if(dx||dy){selSet().forEach(id=>mv(objs.find(q=>q.id===id),dx,dy));drag={x,y};draw()}return}
+ if(!tmp)return;
+ if(tmp.t==='poly'){tmp.pts=[...pts,[x,y]]}else if(tmp.t==='rect'){tmp.w=x-tmp.x;tmp.h=y-tmp.y}else if(tmp.t==='circle'){tmp.r=Math.hypot(x-tmp.x,y-tmp.y)}else{tmp.x2=x;tmp.y2=y}draw()};
+cv.onmouseup=e=>{pan=null;drag=null;if(!tmp||tmp.t==='poly')return;const t=tmp;tmp=null;
+ if(t.t==='rect'){if(!t.w||!t.h)return draw();if(t.w<0)t.x+=t.w,t.w=-t.w;if(t.h<0)t.y+=t.h,t.h=-t.h}
+ if(t.t==='circle'&&!t.r)return draw();if((t.t==='line'||t.t==='dim')&&t.x===t.x2&&t.y===t.y2)return draw();
+ push();const o={t:t.t};if(t.t==='rect')Object.assign(o,{x:t.x,y:t.y,w:t.w,h:t.h,rot:0});else if(t.t==='circle')Object.assign(o,{x:t.x,y:t.y,r:t.r});else Object.assign(o,{x:t.x,y:t.y,x2:t.x2,y2:t.y2});
+ sel=[add(o).id];draw()};
+cv.ondblclick=()=>{if(tool==='poly')endPoly()};cv.oncontextmenu=e=>{e.preventDefault();if(tool==='poly')endPoly()};
+function endPoly(){if(pts.length>1){push();sel=[add({t:'poly',pts:[...pts]}).id]}pts=[];tmp=null;draw()}
+cv.onwheel=e=>{e.preventDefault();const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top,f=e.deltaY<0?1.15:1/1.15,nk=Math.min(5,Math.max(.02,v.k*f));
+ v.x=mx-(mx-v.x)*nk/v.k;v.y=my-(my-v.y)*nk/v.k;v.k=nk;draw()};
+// ===== Edit actions =====
+function del(){if(!sel.length)return;push();const s=selSet();objs=objs.filter(o=>!s.has(o.id));sel=[];draw()}
+function copy(){const s=selSet();clip=JSON.parse(JSON.stringify(objs.filter(o=>s.has(o.id))))}
+function paste(){if(!clip.length)return;push();sel=[];const m={};clip.forEach(o=>{const n=JSON.parse(JSON.stringify(o));mv(n,G*2,G*2);if(n.g){m[n.g]=m[n.g]||gid++;n.g=m[n.g]}sel.push(add(n).id)});copy2();draw()}
+function copy2(){clip=clip.map(o=>{const n=JSON.parse(JSON.stringify(o));mv(n,G*2,G*2);return n})}
+function rot(){if(!sel.length)return;push();selSet().forEach(id=>{const o=objs.find(q=>q.id===id);if(o.t==='comp'||o.t==='rect'){o.rot=((o.rot||0)+90)%360}else if(o.t==='line'||o.t==='dim'){const cx=(o.x+o.x2)/2,cy=(o.y+o.y2)/2;[o.x,o.y]=[cx-(o.y-cy),cy+(o.x-cx)];[o.x2,o.y2]=[cx-(o.y2-cy),cy+(o.x2-cx)]}});draw()}
+function mirror(){if(!sel.length)return;push();const s=selSet(),a=objs.filter(o=>s.has(o.id)),b=a.map(bbox),cx=(Math.min(...b.map(q=>q[0]))+Math.max(...b.map(q=>q[2])))/2;
+ a.forEach(o=>{const f=x=>2*cx-x;if(o.t==='rect'||o.t==='comp')o.x=f(o.x+o.w)-0;else if(o.pts)o.pts=o.pts.map(p=>[f(p[0]),p[1]]);else{o.x=f(o.x);if('x2'in o)o.x2=f(o.x2)}});draw()}
+function group(){if(sel.length<2)return;push();const g=gid++;selSet().forEach(id=>objs.find(q=>q.id===id).g=g);draw()}
+function ungroup(){push();selSet().forEach(id=>delete objs.find(q=>q.id===id).g);draw()}
+function toggleSnap(){snap=!snap;document.getElementById('snapB').classList.toggle('on',snap)}
+function fit(){if(!objs.length){v={x:60,y:60,k:.4};return draw()}const b=objs.map(bbox),x0=Math.min(...b.map(q=>q[0])),y0=Math.min(...b.map(q=>q[1])),x1=Math.max(...b.map(q=>q[2])),y1=Math.max(...b.map(q=>q[3]));
+ const k=Math.min((cv.clientWidth-80)/(x1-x0||1),(cv.clientHeight-80)/(y1-y0||1));v={k,x:40-x0*k+(cv.clientWidth-80-(x1-x0)*k)/2,y:40-y0*k};draw()}
+// ===== Project =====
+function dl(name,data,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;a.click()}
+const proj=()=>JSON.stringify({app:'electrical-cad',v:1,objs,nid,gid,G},null,1);
+function saveP(){dl('project.json',proj(),'application/json')}
+function dupP(){const n=JSON.parse(proj());dl('project-copy.json',JSON.stringify(n,null,1),'application/json')}
+function newP(){if(objs.length&&!confirm('Clear project?'))return;push();objs=[];sel=[];draw()}
+document.getElementById('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{try{const d=JSON.parse(t);push();objs=d.objs;nid=d.nid||nid;gid=d.gid||gid;sel=[];fit()}catch{alert('Invalid project file')}});e.target.value=''};
+function exportSVG(){const bb=W.getBBox(),p=50;const clone=W.cloneNode(true);clone.removeAttribute('transform');
+ dl('drawing.svg',`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bb.x-p} ${bb.y-p} ${bb.width+2*p} ${bb.height+2*p}" style="background:#fff">${clone.outerHTML.replace(/#cfd8e6/g,'#000').replace(/#e6edf7/g,'#000')}</svg>`,'image/svg+xml')}
+// ===== Samples =====
+function sample(k){push();objs=[];sel=[];const C=(n,x,y)=>{const l=LIB.find(q=>q[0]===n);add({t:'comp',name:n,x,y,w:l[1],h:l[2],c:l[3],rot:0})};
+ if(k==='mdb'){C('Cabinet 800x2000',0,0);C('ACB',250,100);['R','S','T','N'].forEach((p,i)=>C('Busbar '+p,100,550+i*40));C('PE Bar',100,720);
+  for(let i=0;i<4;i++){C('MCCB 3P',100+i*150,800);C('MCCB 3P',100+i*150,1000)}C('Power Meter',100,1250);C('CT',250,1250);C('SPD',400,1250);C('Terminal Block',100,1500)}
+ else{C('Cabinet 800x2000',0,0);C('Solar Inverter',150,100);for(let i=0;i<6;i++){C('PV Fuse Holder',100+i*50,600);C('DC Breaker',100+i*60,800)}C('DC Isolator',100,1000);C('SPD',250,1000);C('MCCB 3P',100,1200);C('Power Meter',300,1200)}
+ add({t:'dim',x:0,y:-100,x2:800,y2:-100});add({t:'dim',x:-100,y:0,x2:-100,y2:2000});fit()}
+// ===== Keys =====
+addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
+ if(e.ctrlKey){if(k==='z'){e.preventDefault();undo()}else if(k==='y'){e.preventDefault();redo()}else if(k==='c')copy();else if(k==='v')paste();else if(k==='g'){e.preventDefault();e.shiftKey?ungroup():group()}else if(k==='s'){e.preventDefault();saveP()}return}
+ if(k==='delete'||k==='backspace')del();else if(k==='escape'){tmp=null;pts=[];sel=[];draw()}else if(k==='enter'&&tool==='poly')endPoly();
+ else{const m={v:'select',l:'line',r:'rect',c:'circle',p:'poly',d:'dim',t:'text'};if(m[k])setTool(m[k])}});
+addEventListener('resize',draw);setTool('select');sample('mdb');
+</script></body></html>
